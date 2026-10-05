@@ -1,0 +1,21 @@
+.DS_Store
+
+# Generated audit workspaces
+audits/*
+!audits/.gitkeep
+
+# Node dependencies
+node_modules/
+
+# One-off Lighthouse output
+lighthouse.md
+lighthouse.json
+
+# Saved audit output at root level
+automated-check.md
+security-check.md
+deployr-*/
+
+# Local environment
+.env
+.env.*
