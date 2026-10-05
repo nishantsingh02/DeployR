@@ -1,0 +1,10 @@
+{
+  "agencyName": "Origin",
+  "auditorName": "Nishant Singh",
+  "defaultCurrency": "USD",
+  "services": {
+    "audit": "Starting at $199",
+    "refresh": "Starting at $1,299",
+    "growth": "Starting at $349/mo"
+  }
+}
