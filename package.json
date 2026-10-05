@@ -1,0 +1,48 @@
+{
+  "name": "deployr",
+  "version": "0.1.8",
+  "description": "Fast TypeScript CLI for clear, client-ready website audits.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "MIT",
+  "author": "Nishant Singh",
+  "files": [
+    "LICENSE",
+    "README.md",
+    "deployr.config.json",
+    "shipsafe.config.json",
+    "audits/.gitkeep",
+    "docs",
+    "src"
+  ],
+  "bin": {
+    "deployr": "src/cli.ts",
+    "dpr": "src/cli.ts",
+    "shipsafe": "src/cli.ts",
+    "ss": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "node src/cli.ts",
+    "cli": "node src/cli.ts",
+    "check": "node src/cli.ts check",
+    "security": "node src/cli.ts security",
+    "performance": "node src/cli.ts performance",
+    "perf": "node src/cli.ts performance",
+    "inspect": "node src/cli.ts inspect",
+    "report": "node src/cli.ts report",
+    "workspace:new": "node src/cli.ts new",
+    "workspace:list": "node src/cli.ts list",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && node --test"
+  },
+  "dependencies": {
+    "chrome-launcher": "^1.2.1",
+    "lighthouse": "^13.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^7.0.2"
+  }
+}
