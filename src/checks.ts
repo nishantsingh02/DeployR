@@ -22,6 +22,18 @@ export type HtmlCheck = {
   feedback: Feedback[];
 };
 
+export type SecurityCheck = {
+  url: string;
+  score: number;
+  https: boolean;
+  hsts: boolean;
+  csp: boolean;
+  frameOptions: boolean;
+  referrerPolicy: boolean;
+  secureCookies: boolean | null;
+  feedback: Feedback[];
+};
+
 export function normalizeUrl(input: string): string {
   const value = input.trim();
   if (!value) throw new Error("Website URL is required.");
@@ -218,6 +230,96 @@ export function analyzeHtml(page: FetchedPage): HtmlCheck {
   };
 }
 
+function cookies(headers: Headers): string[] {
+  if (typeof headers.getSetCookie === "function") return headers.getSetCookie();
+  const value = headers.get("set-cookie");
+  return value ? [value] : [];
+}
+
+export function analyzeSecurity(page: Pick<FetchedPage, "url" | "headers">): SecurityCheck {
+  const https = page.url.startsWith("https://");
+  const hsts = page.headers.has("strict-transport-security");
+  const csp = page.headers.has("content-security-policy");
+  const frameOptions = page.headers.has("x-frame-options");
+  const referrerPolicy = page.headers.has("referrer-policy");
+  const setCookies = cookies(page.headers);
+  const secureCookies =
+    setCookies.length === 0
+      ? null
+      : setCookies.every((cookie) => {
+          const value = cookie.toLowerCase();
+          return (
+            value.includes("secure") &&
+            value.includes("httponly") &&
+            value.includes("samesite")
+          );
+        });
+  let score = 100;
+  const feedback: Feedback[] = [];
+
+  if (!https) {
+    score -= 25;
+    feedback.push({ tone: "critical", text: "Serve the site over HTTPS before launch." });
+  } else {
+    feedback.push({ tone: "positive", text: "HTTPS is enabled." });
+  }
+
+  if (!hsts) {
+    score -= 15;
+    feedback.push({
+      tone: "warning",
+      text: "Add Strict-Transport-Security once HTTPS is stable.",
+    });
+  } else {
+    feedback.push({ tone: "positive", text: "HSTS header found." });
+  }
+
+  if (!csp) {
+    score -= 20;
+    feedback.push({
+      tone: "critical",
+      text: "Add a Content-Security-Policy to reduce script injection risk.",
+    });
+  } else {
+    feedback.push({ tone: "positive", text: "Content-Security-Policy found." });
+  }
+
+  if (!frameOptions) {
+    score -= 10;
+    feedback.push({ tone: "warning", text: "Add X-Frame-Options for clickjacking protection." });
+  }
+
+  if (!referrerPolicy) {
+    score -= 5;
+    feedback.push({ tone: "warning", text: "Add Referrer-Policy to limit URL leakage." });
+  }
+
+  if (secureCookies === false) {
+    score -= 10;
+    feedback.push({
+      tone: "critical",
+      text: "Add Secure, HttpOnly, and SameSite to every cookie.",
+    });
+  }
+
+  return {
+    url: page.url,
+    score: Math.max(0, score),
+    https,
+    hsts,
+    csp,
+    frameOptions,
+    referrerPolicy,
+    secureCookies,
+    feedback,
+  };
+}
+
+function yesNo(value: boolean | null): string {
+  if (value === null) return "not set";
+  return value ? "yes" : "no";
+}
+
 export function formatHtmlCli(result: HtmlCheck): string {
   const signals: Signal[] = [
     {
@@ -273,6 +375,59 @@ Score: ${result.score}/100 (${scoreStatus(result.score)})
 - Meta description: ${result.metaDescriptionPresent ? "present" : "missing"}
 - H1 count: ${result.h1Count}
 - Images missing alt: ${result.imageMissingAlt}/${result.imageTotal}
+
+## Feedback
+
+${result.feedback.map((item) => `- ${item.text}`).join("\n")}
+`;
+}
+
+export function formatSecurityCli(result: SecurityCheck): string {
+  const securityTone = (value: boolean | null, important = false): Signal["tone"] =>
+    value === null ? "neutral" : value ? "positive" : important ? "critical" : "warning";
+
+  return resultBlock(
+    "Security check",
+    result.url,
+    result.score,
+    [
+      { label: "HTTPS", value: yesNo(result.https), tone: securityTone(result.https, true) },
+      { label: "HSTS", value: yesNo(result.hsts), tone: securityTone(result.hsts) },
+      { label: "CSP", value: yesNo(result.csp), tone: securityTone(result.csp, true) },
+      {
+        label: "X-Frame-Options",
+        value: yesNo(result.frameOptions),
+        tone: securityTone(result.frameOptions),
+      },
+      {
+        label: "Referrer-Policy",
+        value: yesNo(result.referrerPolicy),
+        tone: securityTone(result.referrerPolicy),
+      },
+      {
+        label: "Secure cookies",
+        value: yesNo(result.secureCookies),
+        tone: securityTone(result.secureCookies, true),
+      },
+    ],
+    result.feedback,
+  );
+}
+
+export function formatSecurityMarkdown(result: SecurityCheck): string {
+  return `# Security Check
+
+URL: ${result.url}
+Score: ${result.score}/100 (${scoreStatus(result.score)})
+
+## Signals
+
+- HTTPS: ${yesNo(result.https)}
+- HSTS: ${yesNo(result.hsts)}
+- CSP: ${yesNo(result.csp)}
+- X-Frame-Options: ${yesNo(result.frameOptions)}
+- Referrer-Policy: ${yesNo(result.referrerPolicy)}
+- Secure cookies: ${yesNo(result.secureCookies)}
 
 ## Feedback
 
