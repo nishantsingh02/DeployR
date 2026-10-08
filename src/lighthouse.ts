@@ -217,3 +217,51 @@ ${
 }
 `;
 }
+
+export async function runLighthouse(
+  inputUrl: string,
+  options: BrowserOptions = {},
+): Promise<{ lhr: LighthouseResult; json: string; summary: LighthouseSummary }> {
+  const [{ default: lighthouse }, chromeLauncher] = await Promise.all([
+    import("lighthouse"),
+    import("chrome-launcher"),
+  ]);
+  const browserPath = findBrowserPath({ config: options });
+  let chrome: Awaited<ReturnType<typeof chromeLauncher.launch>>;
+
+  try {
+    chrome = await chromeLauncher.launch({
+      chromePath: browserPath ?? undefined,
+      chromeFlags: ["--headless", "--disable-gpu"],
+    });
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message.includes("No Chrome installations found")) {
+      throw new Error(
+        "No Chrome-compatible browser found. Install Chrome, Chromium, Brave, Edge, or set DEPLOYR_BROWSER_PATH.",
+      );
+    }
+    throw cause;
+  }
+
+  try {
+    const result = await lighthouse(inputUrl, {
+      port: chrome.port,
+      output: "json",
+      onlyCategories: ["performance", "accessibility", "best-practices", "seo"],
+    });
+    if (!result?.lhr) throw new Error("Lighthouse returned no report.");
+    const lhr = result.lhr as LighthouseResult;
+    return {
+      lhr,
+      json: JSON.stringify(lhr, null, 2),
+      summary: summarizeLighthouse(lhr),
+    };
+  } finally {
+    try {
+      await chrome.kill();
+    } catch {
+      // Ignore cleanup/file-lock errors (common on Windows EPERM when deleting temp user data dir)
+    }
+  }
+}
