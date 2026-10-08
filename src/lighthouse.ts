@@ -131,3 +131,89 @@ export function summarizeLighthouse(lhr: LighthouseResult): LighthouseSummary {
     opportunities,
   };
 }
+
+function metricTone(value: string, good: number, okay: number): Feedback["tone"] {
+  const metric = Number(value.match(/[0-9]+(?:\.[0-9]+)?/)?.[0]);
+  if (!Number.isFinite(metric)) return "warning";
+  if (metric <= good) return "positive";
+  if (metric <= okay) return "warning";
+  return "critical";
+}
+
+function scoreTone(score: number | null): Feedback["tone"] {
+  if (score === null) return "warning";
+  if (score >= 85) return "positive";
+  if (score >= 65) return "warning";
+  return "critical";
+}
+
+export function formatLighthouseCli(summary: LighthouseSummary): string {
+  const feedback: Feedback[] = summary.opportunities.length
+    ? summary.opportunities.map((item) => ({
+        tone: item.score < 50 ? "critical" : "warning",
+        text: `${item.title}${item.displayValue ? ` — ${item.displayValue}` : ""}`,
+      }))
+    : [{ tone: "positive", text: "No major Lighthouse opportunities found." }];
+
+  return resultBlock(
+    "Lighthouse check",
+    summary.url,
+    null,
+    [
+      {
+        label: "Performance",
+        value: `${summary.scores.performance ?? "n/a"}/100`,
+        tone: scoreTone(summary.scores.performance),
+      },
+      {
+        label: "Accessibility",
+        value: `${summary.scores.accessibility ?? "n/a"}/100`,
+        tone: scoreTone(summary.scores.accessibility),
+      },
+      {
+        label: "Best practices",
+        value: `${summary.scores.bestPractices ?? "n/a"}/100`,
+        tone: scoreTone(summary.scores.bestPractices),
+      },
+      {
+        label: "SEO",
+        value: `${summary.scores.seo ?? "n/a"}/100`,
+        tone: scoreTone(summary.scores.seo),
+      },
+      { label: "LCP", value: summary.vitals.lcp, tone: metricTone(summary.vitals.lcp, 2.5, 4) },
+      { label: "CLS", value: summary.vitals.cls, tone: metricTone(summary.vitals.cls, 0.1, 0.25) },
+      { label: "TBT", value: summary.vitals.tbt, tone: metricTone(summary.vitals.tbt, 200, 600) },
+    ],
+    feedback,
+  );
+}
+
+export function formatLighthouseMarkdown(summary: LighthouseSummary): string {
+  return `# Lighthouse Check
+
+URL: ${summary.url}
+
+## Scores
+
+- Performance: ${summary.scores.performance ?? "n/a"}/100
+- Accessibility: ${summary.scores.accessibility ?? "n/a"}/100
+- Best practices: ${summary.scores.bestPractices ?? "n/a"}/100
+- SEO: ${summary.scores.seo ?? "n/a"}/100
+
+## Core Web Vitals
+
+- LCP: ${summary.vitals.lcp}
+- CLS: ${summary.vitals.cls}
+- TBT: ${summary.vitals.tbt}
+
+## Top Opportunities
+
+${
+  summary.opportunities.length
+    ? summary.opportunities
+        .map((item) => `- ${item.title}${item.displayValue ? `: ${item.displayValue}` : ""}`)
+        .join("\n")
+    : "- No major Lighthouse opportunities found."
+}
+`;
+}
