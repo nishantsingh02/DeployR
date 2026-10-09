@@ -1,6 +1,36 @@
 #!/usr/bin/env node
 
+import { mkdir, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import {
+  analyzeHtml,
+  analyzeSecurity,
+  fetchWebsite,
+  formatHtmlCli,
+  formatHtmlMarkdown,
+  formatSecurityCli,
+  formatSecurityMarkdown,
+  normalizeUrl,
+  type HtmlCheck,
+  type SecurityCheck,
+} from "./checks.ts";
+import {
+  formatLighthouseCli,
+  formatLighthouseMarkdown,
+  runLighthouse,
+} from "./lighthouse.ts";
+import { generateReport, parseBrief } from "./report.ts";
+import * as ui from "./ui.ts";
+import {
+  slugify,
+  splitCommaList,
+  Workspace,
+  type AuditInput,
+} from "./workspace.ts";
 
 type Command = "new" | "list" | "check" | "security" | "lighthouse" | "inspect" | "report";
 type SaveRequest = { explicit: boolean; value?: string };
@@ -13,6 +43,14 @@ export type ParsedArgs = {
   help?: Command | "all";
   version: boolean;
 };
+
+type ResolvedTarget =
+  | { kind: "url"; url: string; prompted: boolean }
+  | { kind: "audit"; folder: string; url: string; prompted: false };
+
+type SaveDestination =
+  | { kind: "audit"; folder: string }
+  | { kind: "directory"; folder: string };
 
 const packageJson = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -186,4 +224,187 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
 
   return parsed;
+}
+
+function today(): string {
+  const now = new Date();
+  return [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function suggestedFolder(url: string): string {
+  const hostname = new URL(url).hostname.replace(/^www\./, "");
+  return `./deployr-${slugify(hostname) || "audit"}`;
+}
+
+function expandPath(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
+  return path.resolve(value);
+}
+
+async function auditWebsite(workspace: Workspace, folder: string): Promise<string> {
+  const files = await workspace.readAuditFiles(folder);
+  const website = parseBrief(files.get("brief.md") ?? "").website;
+  if (!website) throw new CliError(`No website found in audits/${folder}/brief.md.`);
+  return normalizeUrl(website);
+}
+
+async function resolveTarget(
+  workspace: Workspace,
+  target: string | undefined,
+  defaultToLatest: boolean,
+): Promise<ResolvedTarget> {
+  const folders = await workspace.listAudits();
+  if (target === "latest" && folders.length) {
+    const folder = folders.at(-1)!;
+    return { kind: "audit", folder, url: await auditWebsite(workspace, folder), prompted: false };
+  }
+  if (target === "latest") {
+    throw new CliError("No audit workspaces found.", "Create one with deployr new.");
+  }
+  if (target && folders.includes(target)) {
+    return {
+      kind: "audit",
+      folder: target,
+      url: await auditWebsite(workspace, target),
+      prompted: false,
+    };
+  }
+  if (target && looksLikeDirectUrl(target)) {
+    try {
+      return { kind: "url", url: normalizeUrl(target), prompted: false };
+    } catch {
+      throw new CliError(
+        `Unknown target: ${target}`,
+        "Use a website URL, latest, or a workspace shown by deployr list.",
+      );
+    }
+  }
+  if (target) {
+    throw new CliError(
+      `Unknown target: ${target}`,
+      "Use a website URL, latest, or a workspace shown by deployr list.",
+    );
+  }
+  if (defaultToLatest && folders.length) {
+    const folder = folders.at(-1)!;
+    return { kind: "audit", folder, url: await auditWebsite(workspace, folder), prompted: false };
+  }
+  if (ui.canPrompt()) {
+    const url = normalizeUrl(await ui.prompt("Website URL", { required: true }));
+    return { kind: "url", url, prompted: true };
+  }
+  throw new CliError("Website URL is required.", "deployr example.com");
+}
+
+async function resolveSaveDestination(
+  workspace: Workspace,
+  save: SaveRequest,
+  url: string,
+): Promise<SaveDestination> {
+  let value = save.value?.trim();
+  if (!value) {
+    if (!ui.canPrompt()) {
+      throw new CliError("Save folder is missing.", "Use --save ./audit-folder.");
+    }
+    value = await ui.prompt("Save folder", { defaultValue: suggestedFolder(url) });
+  }
+
+  const folders = await workspace.listAudits();
+  if (value === "latest") {
+    if (!folders.length) {
+      throw new CliError("No workspace exists for --save latest.", "Use --save ./audit-folder.");
+    }
+    return { kind: "audit", folder: folders.at(-1)! };
+  }
+  if (folders.includes(value)) return { kind: "audit", folder: value };
+  return { kind: "directory", folder: expandPath(value) };
+}
+
+async function chooseDestination(
+  workspace: Workspace,
+  target: ResolvedTarget,
+  save: SaveRequest,
+  offerSave: boolean,
+): Promise<SaveDestination | null> {
+  if (save.explicit) return resolveSaveDestination(workspace, save, target.url);
+  if (target.kind === "audit") return { kind: "audit", folder: target.folder };
+  if (offerSave && ui.canPrompt() && (await ui.confirm("Save the results?", true))) {
+    return resolveSaveDestination(workspace, { explicit: true }, target.url);
+  }
+  return null;
+}
+
+async function writeExternal(
+  destination: SaveDestination,
+  filename: string,
+  content: string,
+): Promise<string> {
+  if (destination.kind !== "directory") throw new Error("Expected directory destination.");
+  await mkdir(destination.folder, { recursive: true });
+  const file = path.join(destination.folder, filename);
+  await writeFile(file, content);
+  return file;
+}
+
+async function saveHtml(
+  workspace: Workspace,
+  destination: SaveDestination,
+  result: HtmlCheck,
+): Promise<void> {
+  const markdown = formatHtmlMarkdown(result);
+  const file =
+    destination.kind === "audit"
+      ? await workspace.updateWorkspaceSection(destination.folder, "Automated Check", markdown)
+      : await writeExternal(destination, "automated-check.md", markdown);
+  ui.saved(file);
+}
+
+async function saveSecurity(
+  workspace: Workspace,
+  destination: SaveDestination,
+  result: SecurityCheck,
+): Promise<void> {
+  const markdown = formatSecurityMarkdown(result);
+  const file =
+    destination.kind === "audit"
+      ? await workspace.updateWorkspaceSection(destination.folder, "Security Check", markdown)
+      : await writeExternal(destination, "security-check.md", markdown);
+  ui.saved(file);
+}
+
+async function saveLighthouse(
+  workspace: Workspace,
+  destination: SaveDestination,
+  markdown: string,
+  json: string,
+): Promise<void> {
+  if (destination.kind === "audit") {
+    ui.saved(
+      await workspace.updateWorkspaceSection(destination.folder, "Lighthouse Check", markdown),
+    );
+    ui.saved(await workspace.writeAuditFile(destination.folder, "raw/lighthouse.json", json));
+    return;
+  }
+  ui.saved(await writeExternal(destination, "lighthouse.md", markdown));
+  ui.saved(await writeExternal(destination, "lighthouse.json", json));
+}
+
+async function checkCommand(
+  workspace: Workspace,
+  targetValue: string | undefined,
+  save: SaveRequest,
+): Promise<void> {
+  const target = await resolveTarget(workspace, targetValue, false);
+  const destination = await chooseDestination(workspace, target, save, target.prompted);
+  ui.section("Website check", target.url);
+  const page = await ui.task("Read website HTML", () => fetchWebsite(target.url));
+  const result = analyzeHtml(page);
+  console.log(`\n${formatHtmlCli(result)}`);
+  if (destination) await saveHtml(workspace, destination, result);
+  else ui.note("Add --save to keep the markdown report");
 }
