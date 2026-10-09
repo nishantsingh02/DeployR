@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+
 import { Workspace } from "./workspace.ts";
 
 export type Brief = {
@@ -152,4 +155,74 @@ Growth: ${config.growthPrice}
 
 Use the audit to prioritise immediate fixes. If most findings need design, copy, and frontend changes, the Refresh package is likely the best next step.
 `;
+}
+
+export function buildClientEmail(config: AgencyConfig, brief: Brief): string {
+  return `Subject: Website audit for ${brief.clientName}
+
+Hi,
+
+I've completed the website audit for ${present(brief.website, "your website")}.
+
+The full report is in final-report.md.
+
+Main goal reviewed: ${present(brief.goal)}
+
+Recommended next step:
+Review the priority fixes in the report. If you want me to handle the design, copy, and implementation work, the Refresh package is the most likely fit.
+
+Thanks,
+${config.auditorName}
+${config.agencyName}
+`;
+}
+
+async function loadConfig(workspace: Workspace): Promise<AgencyConfig> {
+  try {
+    let configRaw: string;
+    try {
+      configRaw = await readFile(path.join(workspace.root, "deployr.config.json"), "utf8");
+    } catch {
+      configRaw = await readFile(path.join(workspace.root, "shipsafe.config.json"), "utf8");
+    }
+    const value = JSON.parse(configRaw) as Record<string, unknown>;
+    const services =
+      value.services && typeof value.services === "object"
+        ? (value.services as Record<string, unknown>)
+        : {};
+    return {
+      agencyName:
+        typeof value.agencyName === "string" ? value.agencyName : defaultConfig.agencyName,
+      auditorName:
+        typeof value.auditorName === "string" ? value.auditorName : defaultConfig.auditorName,
+      auditPrice:
+        typeof services.audit === "string" ? services.audit : defaultConfig.auditPrice,
+      refreshPrice:
+        typeof services.refresh === "string" ? services.refresh : defaultConfig.refreshPrice,
+      growthPrice:
+        typeof services.growth === "string" ? services.growth : defaultConfig.growthPrice,
+    };
+  } catch {
+    return defaultConfig;
+  }
+}
+
+export async function generateReport(
+  workspace: Workspace,
+  folderName: string,
+): Promise<[string, string]> {
+  const files = await workspace.readAuditFiles(folderName);
+  const config = await loadConfig(workspace);
+  const brief = parseBrief(files.get("brief.md") ?? "");
+  const reportPath = await workspace.writeAuditFile(
+    folderName,
+    "final-report.md",
+    buildFinalReport(config, folderName, files),
+  );
+  const emailPath = await workspace.writeAuditFile(
+    folderName,
+    "client-email.md",
+    buildClientEmail(config, brief),
+  );
+  return [reportPath, emailPath];
 }
