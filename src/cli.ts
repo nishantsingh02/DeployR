@@ -408,3 +408,40 @@ async function checkCommand(
   if (destination) await saveHtml(workspace, destination, result);
   else ui.note("Add --save to keep the markdown report");
 }
+
+async function securityCommand(
+  workspace: Workspace,
+  targetValue: string | undefined,
+  save: SaveRequest,
+): Promise<void> {
+  const target = await resolveTarget(workspace, targetValue, true);
+  const destination = await chooseDestination(workspace, target, save, target.prompted);
+  ui.section("Security check", target.url);
+  const page = await ui.task("Read response headers", () => fetchWebsite(target.url));
+  const result = analyzeSecurity(page);
+  console.log(`\n${formatSecurityCli(result)}`);
+  if (destination) await saveSecurity(workspace, destination, result);
+  else ui.note("Add --save to keep the markdown report");
+}
+
+async function lighthouseCommand(
+  workspace: Workspace,
+  targetValue: string | undefined,
+  save: SaveRequest,
+): Promise<void> {
+  const target = await resolveTarget(workspace, targetValue, true);
+  const destination = await chooseDestination(workspace, target, save, target.prompted);
+  ui.section("Lighthouse", target.url);
+  const result = await ui.task("Run Lighthouse", () => runLighthouse(target.url));
+  console.log(`\n${formatLighthouseCli(result.summary)}`);
+  if (destination) {
+    await saveLighthouse(
+      workspace,
+      destination,
+      formatLighthouseMarkdown(result.summary),
+      result.json,
+    );
+  } else {
+    ui.note("Add --save to keep the markdown and JSON reports");
+  }
+}
