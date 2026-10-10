@@ -235,15 +235,64 @@ function today(): string {
   ].join("-");
 }
 
-function suggestedFolder(url: string): string {
-  const hostname = new URL(url).hostname.replace(/^www\./, "");
-  return `./deployr-${slugify(hostname) || "audit"}`;
+async function newAudit(workspace: Workspace): Promise<void> {
+  if (!ui.canPrompt()) {
+    throw new CliError("deployr new needs an interactive terminal.", "Run deployr new in your terminal.");
+  }
+
+  ui.section("New client audit", "four quick questions");
+  const clientName = await ui.prompt("Client name", { required: true });
+  const url = normalizeUrl(await ui.prompt("Website URL", { required: true }));
+  const goal = await ui.prompt("Main goal", { defaultValue: "Improve website results" });
+  const pages = await ui.prompt("Pages", { defaultValue: "/, /contact" });
+  let businessType = "";
+  let targetCustomer = "";
+  let conversionAction = "";
+  let knownConcerns = "";
+  let competitors = "";
+
+  if (await ui.confirm("Add more client context?", false)) {
+    businessType = await ui.prompt("Business type");
+    targetCustomer = await ui.prompt("Target customer");
+    conversionAction = await ui.prompt("Main conversion action");
+    knownConcerns = await ui.prompt("Known concerns", { defaultValue: "None" });
+    competitors = await ui.prompt("Competitors");
+  }
+
+  const slug = slugify(clientName);
+  if (!slug) throw new CliError("Client name must contain letters or numbers.");
+  const input: AuditInput = {
+    clientName,
+    slug,
+    url,
+    businessType,
+    goal,
+    targetCustomer,
+    conversionAction,
+    pages: splitCommaList(pages),
+    knownConcerns: knownConcerns === "None" ? [] : splitCommaList(knownConcerns),
+    competitors: splitCommaList(competitors),
+    createdAt: today(),
+  };
+  const folder = await workspace.createAudit(input);
+
+  ui.section("Workspace ready");
+  ui.saved(folder);
+  ui.note("Next: deployr inspect latest");
 }
 
-function expandPath(value: string): string {
-  if (value === "~") return os.homedir();
-  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
-  return path.resolve(value);
+async function listAudits(workspace: Workspace): Promise<void> {
+  const folders = await workspace.listAudits();
+  ui.section("Client workspaces");
+  if (!folders.length) {
+    console.log("  No workspaces yet.");
+    ui.note("Create one with deployr new");
+    return;
+  }
+  const latest = folders.at(-1);
+  for (const folder of folders) {
+    console.log(`  ${folder}${folder === latest ? "  latest" : ""}`);
+  }
 }
 
 async function auditWebsite(workspace: Workspace, folder: string): Promise<string> {
@@ -299,6 +348,17 @@ async function resolveTarget(
     return { kind: "url", url, prompted: true };
   }
   throw new CliError("Website URL is required.", "deployr example.com");
+}
+
+function suggestedFolder(url: string): string {
+  const hostname = new URL(url).hostname.replace(/^www\./, "");
+  return `./deployr-${slugify(hostname) || "audit"}`;
+}
+
+function expandPath(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
+  return path.resolve(value);
 }
 
 async function resolveSaveDestination(
@@ -444,4 +504,102 @@ async function lighthouseCommand(
   } else {
     ui.note("Add --save to keep the markdown and JSON reports");
   }
+}
+
+async function inspectCommand(
+  workspace: Workspace,
+  targetValue: string | undefined,
+  save: SaveRequest,
+): Promise<void> {
+  const target = await resolveTarget(workspace, targetValue, true);
+  const destination = await chooseDestination(workspace, target, save, target.kind === "url");
+  ui.section("Full website audit", target.url);
+
+  const page = await ui.task("Read website and headers", () => fetchWebsite(target.url));
+  const html = analyzeHtml(page);
+  const security = analyzeSecurity(page);
+  console.log(`\n${formatHtmlCli(html)}`);
+  console.log(`\n${formatSecurityCli(security)}`);
+  if (destination) {
+    await saveHtml(workspace, destination, html);
+    await saveSecurity(workspace, destination, security);
+  }
+
+  const lighthouse = await ui.task("Run Lighthouse", () => runLighthouse(target.url));
+  console.log(`\n${formatLighthouseCli(lighthouse.summary)}`);
+  if (destination) {
+    await saveLighthouse(
+      workspace,
+      destination,
+      formatLighthouseMarkdown(lighthouse.summary),
+      lighthouse.json,
+    );
+  } else {
+    ui.note("Add --save to keep all reports");
+  }
+
+  if (destination?.kind === "audit") {
+    ui.note(`Next: deployr report ${destination.folder}`);
+  }
+}
+
+async function reportCommand(workspace: Workspace, target?: string): Promise<void> {
+  let folder: string;
+  try {
+    folder = await workspace.resolveAudit(target);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new CliError(message, "Create a workspace with deployr new.");
+  }
+  ui.section("Client report", folder);
+  const [reportPath, emailPath] = await ui.task("Build report and client email", () =>
+    generateReport(workspace, folder),
+  );
+  ui.saved(reportPath);
+  ui.saved(emailPath);
+}
+
+export async function run(argv = process.argv.slice(2)): Promise<void> {
+  const parsed = parseArgs(argv);
+  if (parsed.noColor) ui.setColorsEnabled(false);
+  if (parsed.version) {
+    console.log(packageJson.version);
+    return;
+  }
+  if (parsed.help) {
+    console.log(parsed.help === "all" ? help : commandHelp[parsed.help]);
+    return;
+  }
+
+  const workspace = new Workspace();
+  switch (parsed.command) {
+    case "new":
+      return newAudit(workspace);
+    case "list":
+      return listAudits(workspace);
+    case "check":
+      return checkCommand(workspace, parsed.target, parsed.save);
+    case "security":
+      return securityCommand(workspace, parsed.target, parsed.save);
+    case "lighthouse":
+      return lighthouseCommand(workspace, parsed.target, parsed.save);
+    case "inspect":
+      return inspectCommand(workspace, parsed.target, parsed.save);
+    case "report":
+      return reportCommand(workspace, parsed.target);
+  }
+}
+
+async function main(): Promise<void> {
+  try {
+    await run();
+  } catch (cause) {
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    ui.error(error.message, error instanceof CliError ? error.hint : undefined);
+    process.exitCode = error instanceof CliError ? error.exitCode : 1;
+  }
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  await main();
 }
