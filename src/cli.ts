@@ -235,64 +235,15 @@ function today(): string {
   ].join("-");
 }
 
-async function newAudit(workspace: Workspace): Promise<void> {
-  if (!ui.canPrompt()) {
-    throw new CliError("deployr new needs an interactive terminal.", "Run deployr new in your terminal.");
-  }
-
-  ui.section("New client audit", "four quick questions");
-  const clientName = await ui.prompt("Client name", { required: true });
-  const url = normalizeUrl(await ui.prompt("Website URL", { required: true }));
-  const goal = await ui.prompt("Main goal", { defaultValue: "Improve website results" });
-  const pages = await ui.prompt("Pages", { defaultValue: "/, /contact" });
-  let businessType = "";
-  let targetCustomer = "";
-  let conversionAction = "";
-  let knownConcerns = "";
-  let competitors = "";
-
-  if (await ui.confirm("Add more client context?", false)) {
-    businessType = await ui.prompt("Business type");
-    targetCustomer = await ui.prompt("Target customer");
-    conversionAction = await ui.prompt("Main conversion action");
-    knownConcerns = await ui.prompt("Known concerns", { defaultValue: "None" });
-    competitors = await ui.prompt("Competitors");
-  }
-
-  const slug = slugify(clientName);
-  if (!slug) throw new CliError("Client name must contain letters or numbers.");
-  const input: AuditInput = {
-    clientName,
-    slug,
-    url,
-    businessType,
-    goal,
-    targetCustomer,
-    conversionAction,
-    pages: splitCommaList(pages),
-    knownConcerns: knownConcerns === "None" ? [] : splitCommaList(knownConcerns),
-    competitors: splitCommaList(competitors),
-    createdAt: today(),
-  };
-  const folder = await workspace.createAudit(input);
-
-  ui.section("Workspace ready");
-  ui.saved(folder);
-  ui.note("Next: deployr inspect latest");
+function suggestedFolder(url: string): string {
+  const hostname = new URL(url).hostname.replace(/^www\./, "");
+  return `./deployr-${slugify(hostname) || "audit"}`;
 }
 
-async function listAudits(workspace: Workspace): Promise<void> {
-  const folders = await workspace.listAudits();
-  ui.section("Client workspaces");
-  if (!folders.length) {
-    console.log("  No workspaces yet.");
-    ui.note("Create one with deployr new");
-    return;
-  }
-  const latest = folders.at(-1);
-  for (const folder of folders) {
-    console.log(`  ${folder}${folder === latest ? "  latest" : ""}`);
-  }
+function expandPath(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
+  return path.resolve(value);
 }
 
 async function auditWebsite(workspace: Workspace, folder: string): Promise<string> {
@@ -348,17 +299,6 @@ async function resolveTarget(
     return { kind: "url", url, prompted: true };
   }
   throw new CliError("Website URL is required.", "deployr example.com");
-}
-
-function suggestedFolder(url: string): string {
-  const hostname = new URL(url).hostname.replace(/^www\./, "");
-  return `./deployr-${slugify(hostname) || "audit"}`;
-}
-
-function expandPath(value: string): string {
-  if (value === "~") return os.homedir();
-  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
-  return path.resolve(value);
 }
 
 async function resolveSaveDestination(
